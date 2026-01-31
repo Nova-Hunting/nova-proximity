@@ -18,7 +18,7 @@ __author__ = "Thomas Roccia (@fr0gger_)"
 try:
     from nova.core.parser import NovaParser
     from nova.core.matcher import NovaMatcher
-    from nova.evaluators.llm import OpenAIEvaluator, GroqEvaluator
+    from nova.evaluators.llm import OpenAIEvaluator, GroqEvaluator, AnthropicEvaluator, AzureOpenAIEvaluator, OllamaEvaluator
     NOVA_AVAILABLE = True
 except ImportError:
     NOVA_AVAILABLE = False
@@ -34,7 +34,7 @@ class NovaEvaluator:
         
         Args:
             rule_file_path: Path to the .nov rule file
-            evaluator_type: Type of evaluator ("openai" or "groq")
+            evaluator_type: Type of evaluator ("openai", "groq", "anthropic", "azure", "ollama")
             model: Model to use (optional, defaults will be used)
             api_key: API key for the evaluator (optional, uses env vars)
         """
@@ -129,6 +129,28 @@ class NovaEvaluator:
                     evaluator = GroqEvaluator(api_key=self.api_key, model=model)
                 else:
                     evaluator = GroqEvaluator(model=model)
+            
+            elif self.evaluator_type == "anthropic":
+                model = self.model or "claude-3-sonnet-20240229"
+                
+                if self.api_key:
+                    evaluator = AnthropicEvaluator(api_key=self.api_key, model=model)
+                else:
+                    evaluator = AnthropicEvaluator(model=model)
+            
+            elif self.evaluator_type == "azure":
+                deployment_name = self.model or "gpt-35-turbo"
+                
+                if self.api_key:
+                    evaluator = AzureOpenAIEvaluator(api_key=self.api_key, deployment_name=deployment_name)
+                else:
+                    evaluator = AzureOpenAIEvaluator(deployment_name=deployment_name)
+
+            elif self.evaluator_type == "ollama":
+                model = self.model or "llama3"
+                
+                # OllamaEvaluator doesn't take api_key
+                evaluator = OllamaEvaluator(model=model)
             
             else:
                 raise ValueError(f"Unsupported evaluator type: {self.evaluator_type}")

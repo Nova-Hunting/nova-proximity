@@ -1080,7 +1080,7 @@ Examples:
                             help="Enable Nova security analysis")
     nova_group.add_argument("-r", "--rule", default=None,
                             help="Nova rule file path (default: my_rule.nov for MCP, skill_rules.nov for skills)")
-    nova_group.add_argument("--evaluator", choices=["openai", "groq"],
+    nova_group.add_argument("--evaluator", choices=["openai", "groq", "anthropic", "azure", "ollama"],
                             default="openai",
                             help="LLM evaluator type (default: openai)")
     nova_group.add_argument("--model",

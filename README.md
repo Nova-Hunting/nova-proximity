@@ -64,6 +64,12 @@ pip install nova-hunting
 # Set API key (choose one depending on the model you want to use)
 export OPENAI_API_KEY="your-openai-key"
 export GROQ_API_KEY="your-groq-key"
+export ANTHROPIC_API_KEY="your-anthropic-key"
+export AZURE_OPENAI_API_KEY="your-azure-key"
+export AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com/"
+
+# For Ollama, the default host is used (http://localhost:11434) but you can override it if needed
+export OLLAMA_HOST="http://localhost:11434"
 ```
 
 Refer to the NOVA documentation for more details: https://docs.novahunting.ai/
@@ -87,7 +93,7 @@ python novaprox.py <target> [options]
 | `-v, --verbose` | Enable verbose output |
 | `--json-report` | Export JSON report |
 | `--md-report` | Export Markdown report |
-| `--evaluator` | Choose LLM evaluator (default openai) |
+| `--evaluator` | Choose LLM evaluator (openai, groq, anthropic, azure, ollama) |
 | `--full-output` | Show full text without truncation |
 
 ### MCP Server Scanning
