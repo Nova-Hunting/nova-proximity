@@ -63,4 +63,5 @@ dmypy.json
 # Profiling
 .prof
 backup/
-orkl_api_server.py
+
+.nova_tracer/

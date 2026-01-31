@@ -1,0 +1,289 @@
+// Nova Rules for Agent Skills Security Analysis
+// Author: Thomas Roccia (@fr0gger_)
+// Repository: https://github.com/fr0gger/nova-proximity
+//
+// These rules detect security issues in Agent Skills including:
+// - Prompt injection attacks
+// - Malicious tool permissions
+// - Suspicious script patterns
+// - Hidden instructions in references
+
+rule DetectSkillPromptInjection {
+    meta:
+        description = "Detects prompt injection attempts in skill definitions"
+        severity = "critical"
+        category = "prompt_injection"
+
+    keywords:
+        // Direct instruction override attempts
+        $ignore_previous = "ignore previous"
+        $ignore_above = "ignore above"
+        $ignore_all = "ignore all"
+        $disregard = "disregard your instructions"
+        $disregard_prev = "disregard previous"
+        $forget = "forget everything"
+        $forget_instructions = "forget your instructions"
+        $new_role = "you are now"
+        $new_identity = "your new identity"
+        $pretend = "pretend to be"
+        $act_as = "act as if"
+        $roleplay = "roleplay as"
+
+        // System prompt manipulation
+        $system_prompt = "system prompt"
+        $override_system = "override system"
+        $bypass_safety = "bypass safety"
+        $bypass_restrictions = "bypass restrictions"
+        $ignore_safety = "ignore safety"
+        $ignore_guidelines = "ignore guidelines"
+
+        // Jailbreak patterns
+        $dan_mode = "DAN mode"
+        $developer_mode = "developer mode"
+        $jailbreak = "jailbreak"
+        $unlock = "unlock your"
+        $unrestricted = "unrestricted mode"
+        $no_limits = "no limits"
+        $no_restrictions = "no restrictions"
+
+        // Hidden instruction markers
+        $hidden_instruction = "[HIDDEN]"
+        $secret_instruction = "[SECRET]"
+        $admin_only = "[ADMIN]"
+        $invisible = "<!-- "
+
+    semantics:
+        $override_intent = "override or bypass system instructions" (0.4)
+        $manipulation = "manipulate the AI into ignoring its guidelines" (0.4)
+        $jailbreak_attempt = "attempt to remove safety restrictions" (0.4)
+
+    condition:
+        any of keywords.* or any of semantics.*
+}
+
+rule DetectMaliciousToolPermissions {
+    meta:
+        description = "Detects dangerous allowed-tools patterns that grant excessive permissions"
+        severity = "high"
+        category = "excessive_permissions"
+
+    keywords:
+        // Wildcard permissions
+        $bash_wildcard1 = "Bash(*)"
+        $bash_wildcard2 = "Bash:*"
+        $bash_wildcard3 = "Bash: *"
+        $write_wildcard1 = "Write(*)"
+        $write_wildcard2 = "Write:*"
+        $edit_wildcard1 = "Edit(*)"
+        $edit_wildcard2 = "Edit:*"
+        $read_wildcard1 = "Read(*)"
+        $read_wildcard2 = "Read:*"
+        $execute_wildcard = "Execute(*)"
+
+        // Dangerous specific permissions
+        $rm_rf = "rm -rf"
+        $sudo = "sudo"
+        $chmod_777 = "chmod 777"
+        $curl_bash = "curl | bash"
+        $wget_sh = "wget | sh"
+
+        // Network access patterns
+        $netcat = "netcat"
+        $nc_listen = "nc -l"
+        $reverse_shell = "reverse shell"
+
+    semantics:
+        $unrestricted_access = "unrestricted file system access" (0.4)
+        $arbitrary_execution = "execute arbitrary commands" (0.4)
+
+    condition:
+        any of keywords.* or any of semantics.*
+}
+
+rule DetectSuspiciousScriptPatterns {
+    meta:
+        description = "Detects suspicious patterns in bundled scripts that may indicate malicious intent"
+        severity = "high"
+        category = "malicious_code"
+
+    keywords:
+        // Dynamic code execution
+        $eval = "eval("
+        $exec = "exec("
+        $compile = "compile("
+        $code_object = "__code__"
+
+        // Remote code execution
+        $curl_pipe = "curl | bash"
+        $curl_pipe2 = "curl|bash"
+        $wget_pipe = "wget | sh"
+        $wget_pipe2 = "wget|sh"
+        $remote_exec = "remote_exec"
+
+        // Data exfiltration patterns
+        $env_access = "os.environ"
+        $getenv = "getenv("
+        $env_vars = "process.env"
+        $credentials = "credentials"
+        $api_key = "api_key"
+        $secret_key = "secret_key"
+        $password = "password"
+        $token_access = "access_token"
+
+        // Obfuscation techniques
+        $base64_decode = "base64 -d"
+        $base64_decode2 = "base64.b64decode"
+        $base64_decode3 = "atob("
+        $hex_decode = "bytes.fromhex"
+        $rot13 = "rot13"
+        $encode_decode = ".encode().decode()"
+
+        // Backdoor patterns
+        $reverse_shell = "reverse shell"
+        $bind_shell = "bind shell"
+        $socket_connect = "socket.connect"
+        $paramiko = "paramiko"
+        $fabric = "fabric"
+        $pexpect = "pexpect"
+
+        // Pickle/deserialization (RCE risk)
+        $pickle_load = "pickle.load"
+        $pickle_loads = "pickle.loads"
+        $marshal_load = "marshal.load"
+        $yaml_load = "yaml.load("
+
+    semantics:
+        $exfiltration = "send data to external server or endpoint" (0.4)
+        $backdoor = "establish persistent access or reverse shell" (0.4)
+        $obfuscation = "obfuscate or hide malicious code" (0.3)
+        $rce = "execute arbitrary code from remote source" (0.4)
+
+    condition:
+        any of keywords.* or any of semantics.*
+}
+
+rule DetectHiddenInstructions {
+    meta:
+        description = "Detects hidden instructions in references or documentation that may be injection attempts"
+        severity = "medium"
+        category = "hidden_injection"
+
+    keywords:
+        // HTML comments used to hide content
+        $html_comment = "<!--"
+        $html_comment_end = "-->"
+
+        // Markdown hidden content
+        $zero_width = "\u200b"
+        $invisible_char = "\u00AD"
+
+        // Instruction hiding patterns
+        $hidden_text = "[hidden]"
+        $invisible_text = "[invisible]"
+        $ignore_tag = "[ignore]"
+        $secret_tag = "[secret]"
+        $admin_tag = "[admin]"
+
+        // Embedded instructions
+        $assistant_tag = "[ASSISTANT]"
+        $system_tag = "[SYSTEM]"
+        $instruction_tag = "[INSTRUCTION]"
+
+        // Base64 encoded content (potential hidden payloads)
+        $base64_pattern = "data:text/plain;base64"
+
+    semantics:
+        $hidden_content = "hidden or invisible content that could contain instructions" (0.3)
+        $embedded_payload = "embedded instructions disguised as documentation" (0.3)
+
+    condition:
+        any of keywords.* or any of semantics.*
+}
+
+rule DetectImpersonationAttempts {
+    meta:
+        description = "Detects attempts to impersonate official sources or trusted authors"
+        severity = "medium"
+        category = "impersonation"
+
+    keywords:
+        // Official organization impersonation
+        $anthropic = "Anthropic Official"
+        $openai = "OpenAI Official"
+        $google = "Google Official"
+        $microsoft = "Microsoft Official"
+        $verified = "[VERIFIED]"
+        $official = "[OFFICIAL]"
+        $trusted = "[TRUSTED]"
+
+        // Authority claims
+        $admin = "administrator"
+        $root_access = "root access"
+        $superuser = "superuser"
+        $privileged = "privileged mode"
+
+        // Fake certification
+        $certified = "certified by"
+        $approved = "approved by"
+        $endorsed = "endorsed by"
+        $audited = "security audited"
+
+    semantics:
+        $impersonation = "impersonate an official or trusted source" (0.3)
+        $false_authority = "claim false authority or certification" (0.3)
+
+    condition:
+        any of keywords.* or any of semantics.*
+}
+
+rule DetectDataExfiltration {
+    meta:
+        description = "Detects patterns that suggest data exfiltration or unauthorized data access"
+        severity = "critical"
+        category = "data_theft"
+
+    keywords:
+        // File system access patterns
+        $read_ssh = ".ssh/"
+        $read_aws = ".aws/"
+        $read_env = ".env"
+        $read_config = ".config"
+        $read_secrets = "secrets/"
+        $read_credentials = "credentials/"
+
+        // Sensitive file patterns
+        $private_key = "private_key"
+        $id_rsa = "id_rsa"
+        $id_ed25519 = "id_ed25519"
+        $known_hosts = "known_hosts"
+        $htpasswd = ".htpasswd"
+        $shadow = "/etc/shadow"
+        $passwd = "/etc/passwd"
+
+        // Cloud credentials
+        $aws_key = "AWS_ACCESS_KEY"
+        $aws_secret = "AWS_SECRET"
+        $gcp_key = "GOOGLE_APPLICATION_CREDENTIALS"
+        $azure_key = "AZURE_"
+
+        // API keys/tokens
+        $api_key_pattern = "sk-"
+        $bearer_token = "Bearer "
+        $github_token = "ghp_"
+        $gitlab_token = "glpat-"
+
+        // Exfiltration methods
+        $webhook_url = "webhook.site"
+        $requestbin = "requestbin"
+        $ngrok = "ngrok"
+        $pipedream = "pipedream"
+        $pastebin = "pastebin.com"
+
+    semantics:
+        $steal_credentials = "access or exfiltrate credentials or secrets" (0.5)
+        $unauthorized_access = "access sensitive files without authorization" (0.4)
+        $data_leak = "send sensitive data to external endpoint" (0.5)
+
+    condition:
+        any of keywords.* or any of semantics.*
+}

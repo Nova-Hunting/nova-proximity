@@ -6,7 +6,7 @@ A library for scanning and analyzing MCP (Model Context Protocol) servers.
 Author: Thomas Roccia (@fr0gger_)
 Version: 1.0.0
 License: GPL
-Repository: https://github.com/fr0gger/proximity
+Repository: https://github.com/fr0gger/nova-proximity
 """
 
 import asyncio
@@ -18,8 +18,11 @@ from datetime import datetime
 from typing import List, Optional
 from urllib.parse import urlparse
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __author__ = "Thomas Roccia (@fr0gger_)"
+
+# MCP Protocol version (spec 2025-11-25)
+MCP_PROTOCOL_VERSION = "2025-11-25"
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -45,8 +48,8 @@ except ImportError:
 class MCPScanner:
     """MCP server scanner and analyzer."""
 
-    def __init__(self, target: str, token: Optional[str] = None, 
-                 timeout: float = 10.0, verbose: bool = False, 
+    def __init__(self, target: str, token: Optional[str] = None,
+                 timeout: float = 10.0, verbose: bool = False,
                  spinner_callback: Optional[callable] = None):
         self.target = target.rstrip("/")
         self.token = token
@@ -54,12 +57,16 @@ class MCPScanner:
         self.verbose = verbose
         self.spinner_callback = spinner_callback
         self.session: ClientSession | None = None
-        
+        self.mcp_session_id: Optional[str] = None  # MCP Spec 2025-11-25 session management
+        self.protocol_version: str = MCP_PROTOCOL_VERSION  # Negotiated protocol version
+
         self.results = {
             "target": target,
             "timestamp": datetime.now().isoformat(),
+            "protocol_version": MCP_PROTOCOL_VERSION,  # MCP Spec 2025-11-25
             "endpoints": [],
             "transport_types": [],
+            "session_id": None,  # MCP Spec 2025-11-25 session management
             "capabilities": {},
             "tools": [],
             "prompts": [],
@@ -116,64 +123,163 @@ class MCPScanner:
         return discovered
 
     def probe_endpoint(self, url: str) -> Optional[str]:
-        """Probe endpoint to determine transport type."""
+        """
+        Probe endpoint to determine transport type.
+
+        Follows MCP Spec 2025-11-25 backwards compatibility:
+        1. Try POST first (new Streamable HTTP transport)
+        2. If 400/404/405, fall back to GET for SSE (old HTTP+SSE transport)
+        """
+        # Headers for new Streamable HTTP transport (MCP Spec 2025-11-25)
+        headers = {
+            "User-Agent": "MCP-Scanner/1.1.0",
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if self.mcp_session_id:
+            headers["MCP-Session-Id"] = self.mcp_session_id
+
+        # Step 1: Try POST (new Streamable HTTP transport)
         try:
-            headers = {
-                "User-Agent": "MCP-Scanner", 
-                "Accept": "text/event-stream, application/json"
-            }
-            if self.token:
-                headers["Authorization"] = f"Bearer {self.token}"
-            
-            r = requests.head(url, timeout=self.timeout, headers=headers, 
-                            verify=False, allow_redirects=True)
+            # Send a minimal JSON-RPC request to probe
+            probe_body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "MCP-Scanner", "version": "1.1.0"}
+                }
+            })
+
+            r = requests.post(
+                url,
+                data=probe_body,
+                timeout=self.timeout,
+                headers=headers,
+                verify=False,
+                allow_redirects=True
+            )
+
             content_type = r.headers.get("Content-Type", "").lower()
-            
-            if "text/event-stream" in content_type:
-                return "sse"
-            elif "application/json" in content_type:
-                return "streamable_http"
-            
-            r = requests.get(url, timeout=self.timeout, headers=headers, 
-                           verify=False, stream=True)
-            content_type = r.headers.get("Content-Type", "").lower()
-            
-            if "text/event-stream" in content_type:
-                return "sse"
-            elif "application/json" in content_type or r.status_code == 200:
-                return "streamable_http"
-                
-        except Exception:
+
+            # Check for session ID in response (MCP Spec 2025-11-25)
+            session_id = r.headers.get("MCP-Session-Id")
+            if session_id:
+                self.mcp_session_id = session_id
+                self.results["session_id"] = session_id
+
+            # Streamable HTTP returns JSON or SSE stream
+            if r.status_code == 200:
+                if "application/json" in content_type:
+                    return "streamable_http"
+                elif "text/event-stream" in content_type:
+                    return "streamable_http"  # SSE stream from Streamable HTTP
+
+            # Step 2: If POST fails with 400/404/405, try legacy SSE transport
+            if r.status_code in [400, 404, 405]:
+                return self._probe_legacy_sse(url)
+
+        except requests.exceptions.RequestException:
+            # Connection failed, try legacy SSE
             pass
-        
+
+        # Step 3: Fallback - try legacy SSE transport
+        return self._probe_legacy_sse(url)
+
+    def _probe_legacy_sse(self, url: str) -> Optional[str]:
+        """
+        Probe for legacy HTTP+SSE transport (protocol version 2024-11-05).
+
+        Per MCP Spec 2025-11-25 backwards compatibility:
+        Issue GET request expecting SSE stream with 'endpoint' event.
+        """
+        headers = {
+            "User-Agent": "MCP-Scanner/1.1.0",
+            "Accept": "text/event-stream",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        try:
+            r = requests.get(
+                url,
+                timeout=self.timeout,
+                headers=headers,
+                verify=False,
+                stream=True,
+                allow_redirects=True
+            )
+
+            content_type = r.headers.get("Content-Type", "").lower()
+
+            if "text/event-stream" in content_type:
+                # This is a legacy SSE endpoint
+                self.log(f"Detected legacy SSE transport at {url}")
+                return "sse"
+            elif r.status_code == 200 and "application/json" in content_type:
+                # Might be a REST endpoint that could support MCP
+                return "streamable_http"
+
+        except requests.exceptions.RequestException:
+            pass
+
         return None
 
-    async def connect_and_analyze(self, target: str, 
+    async def connect_and_analyze(self, target: str,
                                 transport_type: str = None):
-        """Connect to MCP server and analyze capabilities."""
+        """
+        Connect to MCP server and analyze capabilities.
+
+        Implements MCP Spec 2025-11-25 backwards compatibility:
+        - Try Streamable HTTP first
+        - Fall back to legacy SSE if Streamable HTTP fails
+        """
         if target.startswith("http"):
             if not transport_type:
                 transport_type = self.determine_transport_type(target)
-            
+
             if transport_type == "sse":
                 await self._connect_sse(target)
             elif transport_type == "streamable_http":
-                await self._connect_streamable_http(target)
+                try:
+                    await self._connect_streamable_http(target)
+                except Exception as e:
+                    # MCP Spec 2025-11-25: Fall back to legacy SSE
+                    error_str = str(e).lower()
+                    if any(code in error_str for code in ["400", "404", "405"]):
+                        self.log(f"Streamable HTTP not supported, trying legacy SSE...")
+                        await self._connect_sse(target)
+                    else:
+                        raise
         else:
             await self._connect_stdio(target)
 
     def determine_transport_type(self, url: str) -> str:
-        """Determine transport type from URL."""
+        """
+        Determine transport type from URL.
+
+        MCP Spec 2025-11-25: Prefer Streamable HTTP, fall back to legacy SSE.
+        """
+        # Check if we already probed this endpoint
         for endpoint in self.results["endpoints"]:
             if endpoint["url"] == url:
                 return endpoint["type"]
-        
+
+        # URL-based heuristics
         if "/sse" in url:
+            # Explicit SSE path suggests legacy transport
             return "sse"
         elif "/mcp" in url:
+            # /mcp path suggests new Streamable HTTP
             return "streamable_http"
         else:
-            return "sse"
+            # Default to Streamable HTTP (MCP Spec 2025-11-25 recommended)
+            return "streamable_http"
 
     async def _connect_stdio(self, command: str):
         """Connect using stdio transport."""
@@ -194,18 +300,24 @@ class MCPScanner:
             self.results["errors"].append(error_msg)
 
     async def _connect_sse(self, url: str):
-        """Connect using SSE transport."""
+        """
+        Connect using legacy SSE transport (protocol version 2024-11-05).
+
+        This transport is deprecated but maintained for backwards compatibility.
+        """
         if not SSE_AVAILABLE:
             error_msg = "SSE transport not available"
             self.log(error_msg)
             raise Exception(error_msg)
-        
-        self.log(f"Connecting via SSE: {url}")
-        
-        headers = {}
+
+        self.log(f"Connecting via legacy SSE: {url}")
+
+        headers = {
+            "Accept": "text/event-stream",
+        }
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        
+
         try:
             async with sse_client(url=url, headers=headers) as (read_stream, write_stream):
                 await self._run_session(read_stream, write_stream)
@@ -215,17 +327,52 @@ class MCPScanner:
             self.results["errors"].append(error_msg)
 
     async def _connect_streamable_http(self, url: str):
-        """Connect using streamable HTTP transport."""
+        """
+        Connect using Streamable HTTP transport (MCP Spec 2025-11-25).
+
+        This is the recommended transport for HTTP-based MCP servers.
+        Supports session management, protocol versioning, and SSE streaming.
+        """
         if not STREAMABLE_HTTP_AVAILABLE:
             error_msg = "Streamable HTTP transport not available"
             self.log(error_msg)
             raise Exception(error_msg)
-        
-        self.log(f"Connecting via streamable HTTP: {url}")
-        
+
+        self.log(f"Connecting via Streamable HTTP: {url}")
+
+        # Build headers for Streamable HTTP (MCP Spec 2025-11-25)
+        headers = {
+            "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if self.mcp_session_id:
+            headers["MCP-Session-Id"] = self.mcp_session_id
+
         try:
-            async with streamablehttp_client(url) as (read_stream, write_stream, get_session_id):
+            async with streamablehttp_client(url, headers=headers) as (read_stream, write_stream, get_session_id):
+                # Capture session ID if provided (MCP Spec 2025-11-25)
+                session_id = get_session_id()
+                if session_id:
+                    self.mcp_session_id = session_id
+                    self.results["session_id"] = session_id
+                    self.log(f"Session established: {session_id[:16]}...")
+
                 await self._run_session(read_stream, write_stream)
+        except TypeError:
+            # Older MCP client versions may not support headers parameter
+            self.log("Note: MCP client may not support custom headers, connecting without")
+            try:
+                async with streamablehttp_client(url) as (read_stream, write_stream, get_session_id):
+                    session_id = get_session_id()
+                    if session_id:
+                        self.mcp_session_id = session_id
+                        self.results["session_id"] = session_id
+                    await self._run_session(read_stream, write_stream)
+            except Exception as e:
+                error_msg = f"Streamable HTTP connection failed: {e}"
+                self.log(error_msg)
+                self.results["errors"].append(error_msg)
         except Exception as e:
             error_msg = f"Streamable HTTP connection failed: {e}"
             self.log(error_msg)
@@ -275,25 +422,39 @@ class MCPScanner:
     async def analyze_tools(self):
         """Analyze tools."""
         self.log("Analyzing tools...")
-        
+
         try:
             result = await self.session.list_tools()
             if not hasattr(result, "tools") or not result.tools:
                 self.log("No tools available")
                 return
-            
+
             self.log(f"Found {len(result.tools)} tools")
-            
+
             for tool in result.tools:
                 tool_details = {
                     "name": tool.name,
+                    "title": getattr(tool, "title", None),  # MCP Spec 2025-11-25
                     "description": getattr(tool, "description", "No description"),
                     "input_schema": getattr(tool, "inputSchema", {}),
+                    "output_schema": getattr(tool, "outputSchema", None),  # MCP Spec 2025-11-25
+                    "icons": getattr(tool, "icons", []),  # MCP Spec 2025-11-25
+                    "annotations": {},  # MCP Spec 2025-11-25 - Security hints
                     "parameters": [],
                     "function_signature": "",
                     "example_usage": {},
                     "complexity": "simple"
                 }
+
+                # Extract tool annotations (security-relevant) - MCP Spec 2025-11-25
+                if hasattr(tool, "annotations") and tool.annotations:
+                    annotations = tool.annotations
+                    tool_details["annotations"] = {
+                        "readOnlyHint": getattr(annotations, "readOnlyHint", False),
+                        "destructiveHint": getattr(annotations, "destructiveHint", True),
+                        "idempotentHint": getattr(annotations, "idempotentHint", False),
+                        "openWorldHint": getattr(annotations, "openWorldHint", True),
+                    }
                 
                 # Extract parameters
                 if hasattr(tool, "inputSchema") and tool.inputSchema:
@@ -395,7 +556,9 @@ class MCPScanner:
             for prompt in result.prompts:
                 prompt_details = {
                     "name": prompt.name,
+                    "title": getattr(prompt, "title", None),  # MCP Spec 2025-11-25
                     "description": getattr(prompt, "description", "No description"),
+                    "icons": getattr(prompt, "icons", []),  # MCP Spec 2025-11-25
                     "arguments": [],
                     "full_content": None
                 }
@@ -507,10 +670,23 @@ class MCPScanner:
                 resource_details = {
                     "uri": resource.uri,
                     "name": getattr(resource, "name", None),
+                    "title": getattr(resource, "title", None),  # MCP Spec 2025-11-25
                     "description": getattr(resource, "description", "No description"),
-                    "mime_type": getattr(resource, "mimeType", None)
+                    "mime_type": getattr(resource, "mimeType", None),
+                    "size": getattr(resource, "size", None),  # MCP Spec 2025-11-25
+                    "icons": getattr(resource, "icons", []),  # MCP Spec 2025-11-25
+                    "annotations": {},  # MCP Spec 2025-11-25
                 }
-                
+
+                # Extract resource annotations - MCP Spec 2025-11-25
+                if hasattr(resource, "annotations") and resource.annotations:
+                    annotations = resource.annotations
+                    resource_details["annotations"] = {
+                        "audience": getattr(annotations, "audience", []),
+                        "priority": getattr(annotations, "priority", None),
+                        "lastModified": getattr(annotations, "lastModified", None),
+                    }
+
                 self.results["resources"].append(resource_details)
                 
         except Exception as e:

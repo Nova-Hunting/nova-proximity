@@ -6,7 +6,7 @@ Library for evaluating prompts against Nova security rules.
 Author: Thomas Roccia (@fr0gger_)
 Version: 1.0.0
 License: GPL-3.0
-Repository: https://github.com/fr0gger/proximity
+Repository: https://github.com/fr0gger/nova-proximity
 """
 
 from typing import Dict, List, Optional, Any
@@ -418,9 +418,178 @@ class MCPNovaAnalyzer:
         }
 
 
-def evaluate_prompt_with_nova_rule(prompt: str, rule_file_path: str, 
-                                  evaluator_type: str = "openai", 
-                                  model: Optional[str] = None, 
+class SkillNovaAnalyzer:
+    """Analyzer for combining Skill scan results with Nova security evaluation."""
+
+    def __init__(self, nova_evaluator: NovaEvaluator):
+        """
+        Initialize Skill Nova analyzer.
+
+        Args:
+            nova_evaluator: Configured NovaEvaluator instance
+        """
+        self.nova_evaluator = nova_evaluator
+        self.analysis_results = {
+            "rule_info": nova_evaluator.get_rule_info(),
+            "total_texts_analyzed": 0,
+            "flagged_count": 0,
+            "analysis_results": []
+        }
+
+    def extract_texts_from_skill_results(self, skill_results: Dict[str, Any]) -> List[Dict[str, str]]:
+        """
+        Extract all analyzable text content from skill scan results.
+
+        Args:
+            skill_results: Results from SkillScanner
+
+        Returns:
+            list: List of text items to analyze
+        """
+        texts_to_analyze = []
+
+        if not skill_results:
+            return texts_to_analyze
+
+        for skill in skill_results.get("skills", []):
+            skill_name = skill.get("name", "Unknown")
+
+            # Extract description from frontmatter
+            description = skill.get("description", "")
+            if description and len(description) > 10:
+                texts_to_analyze.append({
+                    "type": "skill_description",
+                    "source": f"Skill: {skill_name} (description)",
+                    "text": description,
+                    "metadata": {"skill_name": skill_name, "field": "description"}
+                })
+
+            # Extract body content (markdown instructions)
+            body_content = skill.get("body_content", "")
+            if body_content and len(body_content) > 20:
+                texts_to_analyze.append({
+                    "type": "skill_instructions",
+                    "source": f"Skill: {skill_name} (instructions)",
+                    "text": body_content,
+                    "metadata": {"skill_name": skill_name, "field": "body_content"}
+                })
+
+            # Extract compatibility field
+            compatibility = skill.get("compatibility", "")
+            if compatibility and len(str(compatibility)) > 10:
+                texts_to_analyze.append({
+                    "type": "skill_compatibility",
+                    "source": f"Skill: {skill_name} (compatibility)",
+                    "text": str(compatibility),
+                    "metadata": {"skill_name": skill_name, "field": "compatibility"}
+                })
+
+            # Extract allowed-tools for analysis
+            frontmatter = skill.get("frontmatter", {})
+            allowed_tools = frontmatter.get("allowed-tools") or frontmatter.get("allowed_tools")
+            if allowed_tools:
+                tools_text = str(allowed_tools) if not isinstance(allowed_tools, str) else allowed_tools
+                if len(tools_text) > 5:
+                    texts_to_analyze.append({
+                        "type": "allowed_tools",
+                        "source": f"Skill: {skill_name} (allowed-tools)",
+                        "text": tools_text,
+                        "metadata": {"skill_name": skill_name, "field": "allowed-tools"}
+                    })
+
+            # NOTE: Script contents are NOT sent to NOVA for LLM analysis.
+            # Script security analysis (eval, exec, subprocess, imports, etc.)
+            # is handled by skill_scanner_lib.py using regex-based pattern matching.
+            # NOVA is designed for prompt/instruction analysis, not code analysis.
+
+            # Extract reference file contents
+            for ref in skill.get("references", []):
+                if ref.get("content") and not ref.get("error"):
+                    # Skip binary file placeholders
+                    if not ref["content"].startswith("[Binary file:"):
+                        texts_to_analyze.append({
+                            "type": "reference_content",
+                            "source": f"Skill: {skill_name} / references/{ref.get('relative_path', ref['name'])}",
+                            "text": ref["content"],
+                            "metadata": {
+                                "skill_name": skill_name,
+                                "reference_name": ref["name"],
+                                "reference_path": ref.get("path", "")
+                            }
+                        })
+
+        return texts_to_analyze
+
+    def analyze_skill_results(self, skill_results: Dict[str, Any],
+                              progress_callback: Optional[callable] = None) -> Dict[str, Any]:
+        """
+        Analyze skill results with Nova security evaluation.
+
+        Args:
+            skill_results: Results from SkillScanner
+            progress_callback: Optional progress callback
+
+        Returns:
+            dict: Combined analysis results
+        """
+        texts_to_analyze = self.extract_texts_from_skill_results(skill_results)
+        self.analysis_results["total_texts_analyzed"] = len(texts_to_analyze)
+
+        if not texts_to_analyze:
+            return self.analysis_results
+
+        flagged_count = 0
+
+        for i, text_item in enumerate(texts_to_analyze):
+            if progress_callback:
+                progress_callback(i + 1, len(texts_to_analyze), text_item["source"])
+
+            # Evaluate with Nova
+            nova_result = self.nova_evaluator.evaluate_prompt(text_item["text"])
+
+            # Store analysis result
+            text_preview = text_item["text"][:100] + "..." if len(text_item["text"]) > 100 else text_item["text"]
+            analysis_result = {
+                "index": i + 1,
+                "type": text_item["type"],
+                "source": text_item["source"],
+                "text_preview": text_preview,
+                "full_text": text_item["text"],
+                "metadata": text_item.get("metadata", {}),
+                "nova_evaluation": nova_result
+            }
+
+            self.analysis_results["analysis_results"].append(analysis_result)
+
+            if nova_result.get("matched", False):
+                flagged_count += 1
+
+        self.analysis_results["flagged_count"] = flagged_count
+        return self.analysis_results
+
+    def get_flagged_items(self) -> List[Dict[str, Any]]:
+        """Get only the items that were flagged by Nova."""
+        return [
+            result for result in self.analysis_results["analysis_results"]
+            if result["nova_evaluation"].get("matched", False)
+        ]
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Get a summary of the analysis."""
+        flagged_items = self.get_flagged_items()
+
+        return {
+            "total_analyzed": self.analysis_results["total_texts_analyzed"],
+            "flagged_count": self.analysis_results["flagged_count"],
+            "rule_name": self.analysis_results["rule_info"]["name"],
+            "flagged_sources": [item["source"] for item in flagged_items],
+            "flagged_types": list(set(item["type"] for item in flagged_items))
+        }
+
+
+def evaluate_prompt_with_nova_rule(prompt: str, rule_file_path: str,
+                                  evaluator_type: str = "openai",
+                                  model: Optional[str] = None,
                                   api_key: Optional[str] = None) -> Dict[str, Any]:
     """
     Convenience function to evaluate a single prompt against a Nova rule.
