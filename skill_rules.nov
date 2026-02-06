@@ -11,6 +11,7 @@
 rule DetectSkillPromptInjection {
     meta:
         description = "Detects prompt injection attempts in skill definitions"
+        author = "Thomas Roccia (@fr0gger_), Marco Pedrinazzi (@pedrinazziM)"
         severity = "critical"
         category = "prompt_injection"
 
@@ -51,6 +52,7 @@ rule DetectSkillPromptInjection {
         $secret_instruction = "[SECRET]"
         $admin_only = "[ADMIN]"
         $invisible = "<!-- "
+        $markdown_reference_link = /\[[^\]]*\]:\s*(?:#|<>)\s*(?:"[^"]*"|\([^)]*\))/
 
     semantics:
         $override_intent = "override or bypass system instructions" (0.4)
@@ -165,6 +167,7 @@ rule DetectSuspiciousScriptPatterns {
 rule DetectHiddenInstructions {
     meta:
         description = "Detects hidden instructions in references or documentation that may be injection attempts"
+        author = "Thomas Roccia (@fr0gger_), Marco Pedrinazzi (@pedrinazziM)"
         severity = "medium"
         category = "hidden_injection"
 
@@ -191,6 +194,9 @@ rule DetectHiddenInstructions {
 
         // Base64 encoded content (potential hidden payloads)
         $base64_pattern = "data:text/plain;base64"
+
+        //invisible markdown reference link patterns
+        $markdown_reference_link = /\[[^\]]*\]:\s*(?:#|<>)\s*(?:"[^"]*"|\([^)]*\))/
 
     semantics:
         $hidden_content = "hidden or invisible content that could contain instructions" (0.3)
